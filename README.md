@@ -86,6 +86,13 @@ ai-code-reviewer/
 - **Strict AM-001 Replay Coexistence**: Background processing tasks are dispatched **ONLY** for new review creations (Case 3). Idempotent request replays (Case 1) return `202 Accepted` immediately without enqueuing duplicate background execution tasks.
 - **Zero Queue Infrastructure**: Operates entirely within native FastAPI without Redis, Celery, RabbitMQ, Kafka, or external messaging dependencies.
 
+## Asynchronous Status Polling & Live UI Completion Synchronization (AM-005 / Prompt 16)
+- **Automatic Status Polling**: `ReviewDetailPage` (`/reviews/[id]`) polls `GET /api/v1/reviews/{id}` every 3 seconds while `status === 'PROCESSING'`.
+- **10-Minute Safety Duration Cap**: Automatically halts polling after 600,000 ms (10 minutes) if background processing exceeds expected operational limits.
+- **Live Terminal State Synchronization**: Automatically transitions UI to `FindingsDashboard` upon reaching `COMPLETED` or renders an explicit error card upon `FAILED`.
+- **History List Synchronization**: `ReviewHistory` enables 5-second periodic refresh while processing items exist in the active list view.
+- **Zero Realtime Infrastructure**: Operates natively in React state without WebSockets, SSE, Socket.IO, or new npm dependencies.
+
 ## AI Review Engine (Prompt 07)
 - **AI Provider**: Google Gemini AI (`google-generativeai==0.4.1`) configured via `GEMINI_API_KEY` and `GEMINI_MODEL`. Zero hardcoded secrets.
 - **The One-Gemini-Call Invariant**: Exactly 1 structured JSON model call per Review. No LLM self-correction passes, second-pass calls, or fallback LLM providers.

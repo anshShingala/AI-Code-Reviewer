@@ -32,6 +32,31 @@ export default function ReviewHistory({ refreshKey }: { refreshKey?: number }) {
     fetchReviews();
   }, [statusFilter, offset, refreshKey]);
 
+  useEffect(() => {
+    let isSubscribed = true;
+    let timerId: NodeJS.Timeout | null = null;
+
+    const hasProcessing = reviews.some((r) => r.status === 'PROCESSING');
+    if (hasProcessing) {
+      timerId = setInterval(async () => {
+        try {
+          const data = await api.listReviews(statusFilter || undefined, limit, offset);
+          if (isSubscribed) {
+            setReviews(data.reviews || []);
+            setTotal(data.total || 0);
+          }
+        } catch {
+          // Ignore background polling errors
+        }
+      }, 5000);
+    }
+
+    return () => {
+      isSubscribed = false;
+      if (timerId) clearInterval(timerId);
+    };
+  }, [reviews, statusFilter, limit, offset]);
+
   const handleNext = () => {
     if (offset + limit < total) {
       setOffset(offset + limit);
