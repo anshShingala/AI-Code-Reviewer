@@ -9,6 +9,7 @@ from app.core.encryption import decrypt_credential_payload
 from app.db.models import Finding, GitHubConnection, Review, ReviewFile, User, utc_now
 from app.services.gemini import GeminiService
 from app.services.github import GitHubService
+from app.services.ownership import acquire_ownership, generate_worker_identity, verify_fencing
 
 ALLOWED_CATEGORIES = {"BUG", "SECURITY", "PERFORMANCE", "MAINTAINABILITY"}
 ALLOWED_SEVERITIES = {"CRITICAL", "HIGH", "MEDIUM", "LOW"}
@@ -30,8 +31,9 @@ class ReviewEngineService:
         review_id: str | uuid.UUID,
         db: Session | None = None,
         categories_override: List[str] | None = None,
+        worker_identity: str | None = None,
     ) -> Review | Dict[str, Any] | None:
-        """Execute the deterministic AI Review Engine pipeline for a Review."""
+        """Execute the deterministic AI Review Engine pipeline for a Review with AM-002 worker fencing."""
         if db is None:
             # Fallback for testing environment without DB session
             return {
@@ -47,6 +49,12 @@ class ReviewEngineService:
 
         # Preflight Check 1: Must be in PROCESSING status
         if review.status != "PROCESSING":
+            return review
+
+        # AM-002 Acquisition Check: Acquire or renew execution lease
+        worker_id = worker_identity or generate_worker_identity()
+        leased_review = acquire_ownership(db, review, worker_id)
+        if not leased_review:
             return review
 
         # Preflight Check 2: Fetch ReviewFiles
@@ -192,7 +200,15 @@ class ReviewEngineService:
                 "suggestion": suggestion,
             })
 
-        # Step D: Findings Persistence & Status Transition to COMPLETED
+        # Step D: AM-002 Worker Fencing Check & Findings Persistence
+        if not verify_fencing(db, review, worker_id):
+            db.rollback()
+            review.status = "FAILED"
+            review.error_message = "Worker fencing check failed: execution lease expired or reassigned (AM-002)"
+            review.updated_at = utc_now()
+            db.commit()
+            return review
+
         try:
             for item in validated_findings:
                 finding_obj = Finding(

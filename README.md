@@ -68,6 +68,12 @@ ai-code-reviewer/
 - **Conflict Behavior**: Reusing `Idempotency-Key` with a different payload returns HTTP `409 Conflict`.
 - **Atomic Creation**: Review state created atomically inside a single PostgreSQL transaction. Concurrent race conditions on `uq_reviews_user_idempotency` are caught and resolved cleanly to existing review.
 
+## Execution Ownership Leasing & Stale Review Reclamation (AM-002)
+- **Ownership Acquisition**: `acquire_ownership()` atomically assigns a unique worker identity string (`owner_identity`) and expiration timestamp (`owner_expires_at`) to a `Review` in `PROCESSING` status.
+- **Worker Fencing**: `verify_fencing()` verifies active lease ownership (`owner_expires_at >= now()` and matching `owner_identity`) prior to findings persistence, fencing out stale or zombie worker writes.
+- **Stale Review Reclamation**: `reclaim_stale_reviews()` queries abandoned reviews (`status == 'PROCESSING'` and `owner_expires_at < now()`) and transitions them to `FAILED` with explicit error message `Review processing timed out or worker crash detected (AM-002 execution lease expired)`.
+- **Zero Schema Cost**: Operates entirely within the pre-built `owner_identity` and `owner_expires_at` columns of the frozen 5-table schema (`ix_reviews_owner_expires`).
+
 ## AI Review Engine (Prompt 07)
 - **AI Provider**: Google Gemini AI (`google-generativeai==0.4.1`) configured via `GEMINI_API_KEY` and `GEMINI_MODEL`. Zero hardcoded secrets.
 - **The One-Gemini-Call Invariant**: Exactly 1 structured JSON model call per Review. No LLM self-correction passes, second-pass calls, or fallback LLM providers.
