@@ -81,6 +81,21 @@ ai-code-reviewer/
 - **Review Detail**: `GET /api/v1/reviews/{review_id}` returns detailed review metadata, file status list, and findings count. Non-existent or cross-user reviews return `404 Not Found` (IDOR defense).
 - **Findings Query**: `GET /api/v1/reviews/{review_id}/findings` returns validated findings list with optional filtering by `file_path`, `category` (`BUG`, `SECURITY`, `PERFORMANCE`, `MAINTAINABILITY`), and `severity` (`CRITICAL`, `HIGH`, `MEDIUM`, `LOW`).
 
+## Frontend Next.js Architecture (Prompts 09 & 10)
+- **Framework & Router**: Next.js 14 App Router with React 18, TypeScript, Tailwind CSS, and Lucide React icons.
+- **Client API Layer**: `src/lib/api.ts` provides strongly typed wrapper around backend REST endpoints (`/api/v1`) with automatic Bearer token injection and HTTP 401 token cleanup.
+- **Component Architecture**:
+  - `GitHubConnect`: Handles OAuth authorization trigger and GitHub connection status indicator.
+  - `RepoSelector`: Multi-stage dropdown cascade for repository selection, branch discovery, and recursive Git tree traversal.
+  - `ReviewForm`: Configures categories, generates client-side UUID `Idempotency-Key` headers, and submits reviews to `POST /api/v1/reviews`.
+  - `ReviewHistory`: Renders paginated historical reviews with status badges (`PROCESSING`, `COMPLETED`, `FAILED`) and live polling/refresh.
+  - `FindingsDashboard`: Displays detailed review summary, error banner, and findings list with multi-faceted filtering (file path, category, severity).
+
+## End-to-End System Integration & Verification (Prompt 11)
+- **Full-Stack Alignment**: Seamless communication between Next.js frontend (`http://127.0.0.1:3000`) and FastAPI backend (`http://127.0.0.1:8000`).
+- **Verification Integrity**: Passed 74 backend pytest unit and integration tests (`tests/`) and zero-error Next.js production build (`npm run build`).
+- **Contract Enforcement**: Enforces zero-regression against all frozen specifications across Prompts 01–10.
+
 ## Setup Instructions
 
 ### Backend Environment Setup
