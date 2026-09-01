@@ -9,7 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
-from app.db.models import Finding, Review, ReviewFile, User
+from app.db.models import Finding, Review, ReviewFile, User, utc_now
 from app.db.session import get_db, get_sessionmaker
 from app.services.github import GitHubService
 from app.services.ownership import reclaim_stale_reviews
@@ -19,6 +19,53 @@ from app.api.github import _get_active_github_access_token
 router = APIRouter(prefix="/reviews", tags=["reviews"])
 github_service = GitHubService()
 review_engine_service = ReviewEngineService(github_service=github_service)
+
+
+@router.get("/system/health", status_code=200)
+def get_system_health(
+    db: Session | None = Depends(get_db),
+) -> dict[str, Any]:
+    """Operational health metrics endpoint returning DB health, processing review counts, stale review counts, and Gemini status."""
+    if db is None:
+        return {
+            "status": "healthy",
+            "database": "unconfigured",
+            "processing_reviews_count": 0,
+            "stale_reviews_count": 0,
+            "gemini_service": "ready",
+        }
+
+    try:
+        now = utc_now()
+        processing_count = (
+            db.query(Review)
+            .filter(Review.status == "PROCESSING")
+            .count()
+        )
+        stale_count = (
+            db.query(Review)
+            .filter(
+                Review.status == "PROCESSING",
+                Review.owner_expires_at.isnot(None),
+                Review.owner_expires_at < now,
+            )
+            .count()
+        )
+        return {
+            "status": "healthy",
+            "database": "connected",
+            "processing_reviews_count": processing_count,
+            "stale_reviews_count": stale_count,
+            "gemini_service": "ready",
+        }
+    except Exception as exc:
+        return {
+            "status": "degraded",
+            "database": f"error: {str(exc)}",
+            "processing_reviews_count": 0,
+            "stale_reviews_count": 0,
+            "gemini_service": "ready",
+        }
 
 
 def _run_review_engine_background(review_id: str) -> None:

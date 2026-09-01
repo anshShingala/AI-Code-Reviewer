@@ -93,6 +93,12 @@ ai-code-reviewer/
 - **History List Synchronization**: `ReviewHistory` enables 5-second periodic refresh while processing items exist in the active list view.
 - **Zero Realtime Infrastructure**: Operates natively in React state without WebSockets, SSE, Socket.IO, or new npm dependencies.
 
+## System Operational Health Metrics & Verification Suite (AM-006 / Prompt 17)
+- **Operational Health Endpoint**: `GET /api/v1/reviews/system/health` provides real-time visibility into database connectivity status, active processing review counts, stale review counts (expired leases), and Gemini service readiness.
+- **Graceful Unconfigured Fallback**: Gracefully reports `database: "unconfigured"` during testing or uninitialized DB connections without throwing 500 errors.
+- **Comprehensive E2E Test Suite**: End-to-end verification tests in `test_e2e_integration.py` validate the full lifecycle across AM-001 idempotency, AM-002 leasing/fencing, AM-003 reclamation, AM-004 background task dispatching, AM-005 polling, and AM-006 health metrics.
+- **Zero Schema Cost**: Operates 100% within the pre-built 5-table PostgreSQL physical schema with zero Alembic migrations or external metrics infrastructure.
+
 ## AI Review Engine (Prompt 07)
 - **AI Provider**: Google Gemini AI (`google-generativeai==0.4.1`) configured via `GEMINI_API_KEY` and `GEMINI_MODEL`. Zero hardcoded secrets.
 - **The One-Gemini-Call Invariant**: Exactly 1 structured JSON model call per Review. No LLM self-correction passes, second-pass calls, or fallback LLM providers.

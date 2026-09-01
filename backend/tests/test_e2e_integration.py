@@ -172,3 +172,17 @@ def test_e2e_secret_non_leakage_audit(mock_github_sha) -> None:
         assert TEST_AUTH_SECRET not in content
         assert TEST_ENCRYPTION_KEY not in content
         assert "access_token" not in content
+
+
+# E2E Scenario 4: AM-006 System Operational Health Metrics Endpoint
+def test_e2e_system_operational_health_metrics() -> None:
+    """Verify GET /api/v1/reviews/system/health returns operational metrics."""
+    response = client.get("/api/v1/reviews/system/health")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] in ("healthy", "degraded")
+    assert "database" in data
+    assert "processing_reviews_count" in data
+    assert "stale_reviews_count" in data
+    assert data["gemini_service"] == "ready"
+
