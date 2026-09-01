@@ -74,6 +74,12 @@ ai-code-reviewer/
 - **Stale Review Reclamation**: `reclaim_stale_reviews()` queries abandoned reviews (`status == 'PROCESSING'` and `owner_expires_at < now()`) and transitions them to `FAILED` with explicit error message `Review processing timed out or worker crash detected (AM-002 execution lease expired)`.
 - **Zero Schema Cost**: Operates entirely within the pre-built `owner_identity` and `owner_expires_at` columns of the frozen 5-table schema (`ix_reviews_owner_expires`).
 
+## Execution Recovery & Maintenance Reclamation Service (AM-003 / Prompt 14)
+- **Maintenance Endpoint**: `POST /api/v1/maintenance/reclaim-stale-reviews` triggers on-demand or periodic execution recovery reclamation.
+- **Authenticated Access**: Requires valid JWT token authentication (`get_current_user`), guarding against unauthorized trigger calls.
+- **Response Payload**: Returns structured summary (`status: "success"`, `reclaimed_count`, `reclaimed_review_ids`) with zero secret leakage.
+- **Active Lease Protection**: Guarantees active processing reviews with unexpired leases (`owner_expires_at >= now()`) remain untouched.
+
 ## AI Review Engine (Prompt 07)
 - **AI Provider**: Google Gemini AI (`google-generativeai==0.4.1`) configured via `GEMINI_API_KEY` and `GEMINI_MODEL`. Zero hardcoded secrets.
 - **The One-Gemini-Call Invariant**: Exactly 1 structured JSON model call per Review. No LLM self-correction passes, second-pass calls, or fallback LLM providers.

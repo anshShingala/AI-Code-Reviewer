@@ -6,6 +6,7 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.core import config
 from app.db.base import Base
 from app.db.models import Review, User, utc_now
 from app.services.ownership import (
@@ -16,6 +17,19 @@ from app.services.ownership import (
     verify_fencing,
 )
 from app.services.review_engine import ReviewEngineService
+
+TEST_AUTH_SECRET = "test-auth-secret-123456789012345"
+
+
+@pytest.fixture(autouse=True)
+def setup_test_settings():
+    """Setup test secrets in configuration."""
+    orig_auth = config.settings.AUTH_SECRET
+    config.settings.AUTH_SECRET = TEST_AUTH_SECRET
+    try:
+        yield
+    finally:
+        config.settings.AUTH_SECRET = orig_auth
 
 
 @pytest.fixture
@@ -169,3 +183,50 @@ def test_worker_fencing_in_review_engine(db_session: Session) -> None:
     # Worker 2 attempts execution under worker2 identity -> rejected by fencing or preflight
     res = engine.execute_review_engine(review.id, db=db_session, worker_identity=worker2)
     assert res is not None
+
+
+def test_maintenance_reclaim_endpoint_authentication_required() -> None:
+    """Unauthenticated call to maintenance reclamation endpoint returns 401."""
+    from fastapi.testclient import TestClient
+    from app.main import app
+
+    client = TestClient(app)
+    response = client.post("/api/v1/maintenance/reclaim-stale-reviews")
+    assert response.status_code == 401
+
+
+def test_maintenance_reclaim_endpoint_success() -> None:
+    """Authenticated call to maintenance reclamation endpoint returns success summary."""
+    from fastapi.testclient import TestClient
+    from app.core.security import create_access_token
+    from app.main import app
+
+    client = TestClient(app)
+    user_id = str(uuid.uuid4())
+    token = create_access_token(subject=user_id, secret_key=TEST_AUTH_SECRET)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    response = client.post("/api/v1/maintenance/reclaim-stale-reviews", headers=headers)
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "success"
+    assert "reclaimed_count" in data
+    assert "reclaimed_review_ids" in data
+
+
+def test_reviews_maintenance_reclaim_endpoint_success() -> None:
+    """Authenticated call to reviews/maintenance/reclaim-stale-reviews returns success summary."""
+    from fastapi.testclient import TestClient
+    from app.core.security import create_access_token
+    from app.main import app
+
+    client = TestClient(app)
+    user_id = str(uuid.uuid4())
+    token = create_access_token(subject=user_id, secret_key=TEST_AUTH_SECRET)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    response = client.post("/api/v1/reviews/maintenance/reclaim-stale-reviews", headers=headers)
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "success"
+    assert "reclaimed_count" in data

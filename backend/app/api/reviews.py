@@ -12,6 +12,7 @@ from app.api.deps import get_current_user
 from app.db.models import Finding, Review, ReviewFile, User
 from app.db.session import get_db
 from app.services.github import GitHubService
+from app.services.ownership import reclaim_stale_reviews
 from app.services.review_engine import ReviewEngineService
 from app.api.github import _get_active_github_access_token
 
@@ -652,3 +653,21 @@ def create_review(
                     detail="Idempotency key reuse with conflicting request payload.",
                 )
         raise
+
+
+@router.post("/maintenance/reclaim-stale-reviews", status_code=200)
+def reclaim_stale_reviews_endpoint(
+    current_user: User = Depends(get_current_user),
+    db: Session | None = Depends(get_db),
+) -> dict[str, Any]:
+    """Maintenance endpoint to trigger atomic reclamation of stale PROCESSING reviews."""
+    if db is None:
+        return {"status": "success", "reclaimed_count": 0, "reclaimed_review_ids": []}
+
+    reclaimed = reclaim_stale_reviews(db)
+    return {
+        "status": "success",
+        "reclaimed_count": len(reclaimed),
+        "reclaimed_review_ids": [str(r.id) for r in reclaimed],
+    }
+

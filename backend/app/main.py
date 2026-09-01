@@ -1,10 +1,14 @@
+from typing import Any
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy.orm import Session
+
 from app.api.github import router as github_router
 from app.api.reviews import router as reviews_router
 from app.api.deps import get_current_user
 from app.core.config import settings
 from app.db.models import User
+from app.db.session import get_db
 
 app = FastAPI(
     title=settings.APP_NAME,
@@ -44,3 +48,23 @@ def test_auth_verification(
         "status": "authenticated",
         "user_id": str(current_user.id),
     }
+
+
+@app.post("/api/v1/maintenance/reclaim-stale-reviews", status_code=200)
+def maintenance_reclaim_stale_reviews(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Operational maintenance endpoint for triggering stale review execution reclamation."""
+    from app.services.ownership import reclaim_stale_reviews
+
+    if db is None:
+        return {"status": "success", "reclaimed_count": 0, "reclaimed_review_ids": []}
+
+    reclaimed = reclaim_stale_reviews(db)
+    return {
+        "status": "success",
+        "reclaimed_count": len(reclaimed),
+        "reclaimed_review_ids": [str(r.id) for r in reclaimed],
+    }
+
