@@ -18,5 +18,23 @@ class Settings:
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
     GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-1.5-pro")
 
+    @property
+    def ALLOWED_ORIGINS(self) -> list[str]:
+        """Environment-driven CORS allowed origins with local development fallback."""
+        raw = os.getenv("ALLOWED_ORIGINS", "")
+        defaults = [
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+            "http://localhost:8000",
+            "http://127.0.0.1:8000",
+        ]
+        if not raw:
+            return defaults
+        parsed = [o.strip() for o in raw.split(",") if o.strip()]
+        for d in defaults:
+            if d not in parsed:
+                parsed.append(d)
+        return parsed
+
 
 settings = Settings()
