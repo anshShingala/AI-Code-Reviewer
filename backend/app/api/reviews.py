@@ -3,14 +3,14 @@ import json
 from typing import Any, List
 import uuid
 
-from fastapi import APIRouter, Header, Depends, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, Header, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
 from app.db.models import Finding, Review, ReviewFile, User
-from app.db.session import get_db
+from app.db.session import get_db, get_sessionmaker
 from app.services.github import GitHubService
 from app.services.ownership import reclaim_stale_reviews
 from app.services.review_engine import ReviewEngineService
@@ -19,6 +19,19 @@ from app.api.github import _get_active_github_access_token
 router = APIRouter(prefix="/reviews", tags=["reviews"])
 github_service = GitHubService()
 review_engine_service = ReviewEngineService(github_service=github_service)
+
+
+def _run_review_engine_background(review_id: str) -> None:
+    """Independent background execution helper for async review processing."""
+    session_factory = get_sessionmaker()
+    if not session_factory:
+        review_engine_service.execute_review_engine(review_id, db=None)
+        return
+    db = session_factory()
+    try:
+        review_engine_service.execute_review_engine(review_id, db=db)
+    finally:
+        db.close()
 
 ALLOWED_CATEGORIES = {"BUG", "SECURITY", "PERFORMANCE", "MAINTAINABILITY"}
 ALLOWED_SEVERITIES = {"CRITICAL", "HIGH", "MEDIUM", "LOW"}
@@ -495,11 +508,12 @@ _MOCK_REVIEWS_STORE: dict[tuple[str, str], dict[str, Any]] = {}
 @router.post("", status_code=202)
 def create_review(
     request_data: ReviewCreateRequest,
+    background_tasks: BackgroundTasks,
     idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
     current_user: User = Depends(get_current_user),
     db: Session | None = Depends(get_db),
 ) -> dict[str, Any]:
-    """Create a Review request supporting AM-001 request-level idempotency."""
+    """Create a Review request supporting AM-001 request-level idempotency and AM-004 async background execution."""
     if not idempotency_key or not idempotency_key.strip():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -575,6 +589,7 @@ def create_review(
             "created_at": "2026-09-01T00:00:00Z",
         }
         _MOCK_REVIEWS_STORE[mock_key] = new_mock_review
+        background_tasks.add_task(_run_review_engine_background, new_mock_review["id"])
         return new_mock_review
 
     # Atomic DB Transaction & Idempotency Resolution
@@ -586,7 +601,7 @@ def create_review(
 
     if existing_review:
         if existing_review.request_hash == calculated_request_hash:
-            # Case 1: Equivalent Replay -> Return same Review
+            # Case 1: Equivalent Replay -> Return same Review (No duplicate background task)
             return {
                 "id": str(existing_review.id),
                 "status": existing_review.status,
@@ -595,7 +610,7 @@ def create_review(
                 "created_at": existing_review.created_at.isoformat(),
             }
         else:
-            # Case 2: Conflicting Payload -> Return 409 Conflict
+            # Case 2: Conflicting Payload -> Return 409 Conflict (No background task)
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Idempotency key reuse with conflicting request payload.",
@@ -623,6 +638,7 @@ def create_review(
     try:
         db.commit()
         db.refresh(new_review)
+        background_tasks.add_task(_run_review_engine_background, str(new_review.id))
         return {
             "id": str(new_review.id),
             "status": new_review.status,

@@ -80,6 +80,12 @@ ai-code-reviewer/
 - **Response Payload**: Returns structured summary (`status: "success"`, `reclaimed_count`, `reclaimed_review_ids`) with zero secret leakage.
 - **Active Lease Protection**: Guarantees active processing reviews with unexpired leases (`owner_expires_at >= now()`) remain untouched.
 
+## Asynchronous Background Execution Dispatcher (AM-004 / Prompt 15)
+- **Background Dispatcher**: `POST /api/v1/reviews` uses FastAPI's native `BackgroundTasks` to queue `execute_review_engine` asynchronously upon new review creation.
+- **Session-Isolated Background Execution**: `_run_review_engine_background()` obtains a dedicated independent DB session (`SessionLocal()`) enclosed in a `try...finally: db.close()` block, preventing closed-session errors or connection leaks after the HTTP response returns.
+- **Strict AM-001 Replay Coexistence**: Background processing tasks are dispatched **ONLY** for new review creations (Case 3). Idempotent request replays (Case 1) return `202 Accepted` immediately without enqueuing duplicate background execution tasks.
+- **Zero Queue Infrastructure**: Operates entirely within native FastAPI without Redis, Celery, RabbitMQ, Kafka, or external messaging dependencies.
+
 ## AI Review Engine (Prompt 07)
 - **AI Provider**: Google Gemini AI (`google-generativeai==0.4.1`) configured via `GEMINI_API_KEY` and `GEMINI_MODEL`. Zero hardcoded secrets.
 - **The One-Gemini-Call Invariant**: Exactly 1 structured JSON model call per Review. No LLM self-correction passes, second-pass calls, or fallback LLM providers.

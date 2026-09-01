@@ -309,3 +309,80 @@ def test_no_github_credential_leaked_in_review_response(mock_github_sha) -> None
     content = response.text
     assert "access_token" not in content
     assert TEST_ENCRYPTION_KEY not in content
+
+
+# 23. AM-004 Asynchronous Background Task Execution Dispatching
+def test_new_review_schedules_background_execution(mock_github_sha) -> None:
+    """Verify creating a new review dispatches a background execution task."""
+    from fastapi import BackgroundTasks
+    from app.api.reviews import create_review, ReviewCreateRequest
+    from app.db.models import User
+
+    bg_tasks = BackgroundTasks()
+    user = User(id=uuid.uuid4(), email="test@example.com")
+    req = ReviewCreateRequest(
+        repository_id="owner/repo",
+        ref="main",
+        files=["src/app.py"],
+        categories=["BUG"],
+    )
+    res = create_review(
+        request_data=req,
+        background_tasks=bg_tasks,
+        idempotency_key=str(uuid.uuid4()),
+        current_user=user,
+        db=None,
+    )
+    assert res["status"] == "PROCESSING"
+    assert len(bg_tasks.tasks) == 1
+    assert bg_tasks.tasks[0].func.__name__ == "_run_review_engine_background"
+    assert bg_tasks.tasks[0].args[0] == res["id"]
+
+
+# 24. AM-004 Idempotent Replay Does Not Schedule Duplicate Background Tasks
+def test_idempotent_replay_does_not_schedule_duplicate_background_task(mock_github_sha) -> None:
+    """Verify sequential replay returns 202 without scheduling additional background tasks."""
+    from fastapi import BackgroundTasks
+    from app.api.reviews import create_review, ReviewCreateRequest
+    from app.db.models import User
+
+    bg_tasks1 = BackgroundTasks()
+    user = User(id=uuid.uuid4(), email="test@example.com")
+    key = str(uuid.uuid4())
+    req = ReviewCreateRequest(
+        repository_id="owner/repo",
+        ref="main",
+        files=["src/app.py"],
+        categories=["BUG"],
+    )
+    res1 = create_review(
+        request_data=req,
+        background_tasks=bg_tasks1,
+        idempotency_key=key,
+        current_user=user,
+        db=None,
+    )
+    assert len(bg_tasks1.tasks) == 1
+
+    bg_tasks2 = BackgroundTasks()
+    res2 = create_review(
+        request_data=req,
+        background_tasks=bg_tasks2,
+        idempotency_key=key,
+        current_user=user,
+        db=None,
+    )
+    assert res1["id"] == res2["id"]
+    assert len(bg_tasks2.tasks) == 0
+
+
+# 25. AM-004 Independent Background Session Execution Helper
+def test_background_task_helper_execution() -> None:
+    """Verify _run_review_engine_background helper function executes review engine safely."""
+    from app.api.reviews import _run_review_engine_background
+
+    with patch("app.services.review_engine.ReviewEngineService.execute_review_engine") as mock_exec:
+        _run_review_engine_background("fake-review-id")
+        assert mock_exec.call_count == 1
+
+
