@@ -16,8 +16,8 @@ export default function GitHubConnect({ onStatusChange }: { onStatusChange?: (co
       const data = await api.getGitHubStatus();
       setStatus(data);
       if (onStatusChange) onStatusChange(data.connected);
-    } catch (err: any) {
-      setError(err.message || 'Failed to check GitHub status');
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to check GitHub status');
       if (onStatusChange) onStatusChange(false);
     } finally {
       setLoading(false);
@@ -32,8 +32,8 @@ export default function GitHubConnect({ onStatusChange }: { onStatusChange?: (co
     try {
       const { auth_url } = await api.getGitHubAuthUrl();
       window.location.href = auth_url;
-    } catch (err: any) {
-      setError(err.message || 'Failed to initiate OAuth flow');
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to initiate OAuth flow');
     }
   };
 
@@ -42,8 +42,8 @@ export default function GitHubConnect({ onStatusChange }: { onStatusChange?: (co
     try {
       await api.deleteGitHubConnection();
       await fetchStatus();
-    } catch (err: any) {
-      setError(err.message || 'Failed to disconnect account');
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to disconnect account');
     }
   };
 

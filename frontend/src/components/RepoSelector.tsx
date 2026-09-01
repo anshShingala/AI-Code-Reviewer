@@ -41,8 +41,8 @@ export default function RepoSelector({ isConnected, onSelect }: RepoSelectorProp
     try {
       const data = await api.getRepositories();
       setRepos(data.repositories || []);
-    } catch (err: any) {
-      setError(err.message || 'Failed to load repositories');
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to load repositories');
     } finally {
       setLoadingRepos(false);
     }
@@ -66,8 +66,8 @@ export default function RepoSelector({ isConnected, onSelect }: RepoSelectorProp
         const defaultBranch = data.branches.find((b) => b.name === 'main' || b.name === 'master') || data.branches[0];
         handleBranchChange(repoFullName, defaultBranch.name);
       }
-    } catch (err: any) {
-      setError(err.message || 'Failed to load branches');
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to load branches');
     } finally {
       setLoadingBranches(false);
     }
@@ -86,8 +86,8 @@ export default function RepoSelector({ isConnected, onSelect }: RepoSelectorProp
       const data = await api.getGitTree(owner, repo, branchName);
       const filesOnly = (data.tree || []).filter((item) => item.type === 'blob');
       setTreeItems(filesOnly);
-    } catch (err: any) {
-      setError(err.message || 'Failed to load file tree');
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to load file tree');
     } finally {
       setLoadingTree(false);
     }

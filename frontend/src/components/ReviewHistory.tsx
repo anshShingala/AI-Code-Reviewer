@@ -21,8 +21,8 @@ export default function ReviewHistory({ refreshKey }: { refreshKey?: number }) {
       const data = await api.listReviews(statusFilter || undefined, limit, offset);
       setReviews(data.reviews || []);
       setTotal(data.total || 0);
-    } catch (err: any) {
-      setError(err.message || 'Failed to load review history');
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to load review history');
     } finally {
       setLoading(false);
     }

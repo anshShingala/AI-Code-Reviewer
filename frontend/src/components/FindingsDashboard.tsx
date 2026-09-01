@@ -24,8 +24,8 @@ export default function FindingsDashboard({ review }: { review: ReviewItem }) {
       });
       setFindings(data.findings || []);
       setTotalFindings(data.total_findings || 0);
-    } catch (err: any) {
-      setError(err.message || 'Failed to load findings');
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to load findings');
     } finally {
       setLoading(false);
     }

@@ -53,11 +53,12 @@ export default function ReviewForm({ repositoryId, refName, selectedFiles, onRev
       });
 
       onReviewCreated(result);
-    } catch (err: any) {
-      if (err.message && err.message.includes('Idempotency key conflict')) {
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '';
+      if (msg.includes('Idempotency key conflict')) {
         setError('409 Conflict: Idempotency key reuse with conflicting request payload.');
       } else {
-        setError(err.message || 'Failed to submit code review request.');
+        setError(msg || 'Failed to submit code review request.');
       }
     } finally {
       setLoading(false);

@@ -17,8 +17,8 @@ export default function ReviewDetailPage({ params }: { params: { id: string } })
     try {
       const data = await api.getReviewDetail(params.id);
       setReview(data);
-    } catch (err: any) {
-      setError(err.message || 'Failed to load review details');
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to load review details');
     } finally {
       setLoading(false);
     }
