@@ -2,7 +2,7 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 from typing import Any, AsyncGenerator
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
@@ -93,6 +93,12 @@ app.include_router(reviews_router, prefix="/api/v1")
 def health_check() -> dict[str, str]:
     """Minimal development foundation health endpoint."""
     return {"status": "healthy"}
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon() -> Response:
+    """Handle GET /favicon.ico without returning 404."""
+    return Response(status_code=204)
 
 
 @app.get("/api/v1/test-auth", status_code=200)
