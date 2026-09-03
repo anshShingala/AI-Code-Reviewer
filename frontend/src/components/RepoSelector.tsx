@@ -61,9 +61,9 @@ export default function RepoSelector({ isConnected, onSelect }: RepoSelectorProp
     setError(null);
     try {
       const data = await api.getBranches(owner, repo);
-      setBranches(data.branches || []);
-      if (data.branches && data.branches.length > 0) {
-        const defaultBranch = data.branches.find((b) => b.name === 'main' || b.name === 'master') || data.branches[0];
+      setBranches(data);
+      if (data && data.length > 0) {
+        const defaultBranch = data.find((b) => b.name === 'main' || b.name === 'master') || data[0];
         handleBranchChange(repoFullName, defaultBranch.name);
       }
     } catch (err: unknown) {

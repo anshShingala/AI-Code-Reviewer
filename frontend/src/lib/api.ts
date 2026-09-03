@@ -155,7 +155,7 @@ export const api = {
   getRepositories: () => request<Repository[]>('/github/repositories'),
 
   getBranches: (owner: string, repo: string) =>
-    request<{ branches: Branch[] }>(`/github/repositories/${owner}/${repo}/branches`),
+    request<Branch[]>(`/github/repositories/${owner}/${repo}/branches`),
 
   getGitTree: (owner: string, repo: string, ref: string) =>
     request<{ tree: GitTreeItem[] }>(`/github/repositories/${owner}/${repo}/tree/${ref}`),
