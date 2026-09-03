@@ -1,12 +1,13 @@
+import uuid
 from typing import Any
 import urllib.parse
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_current_user
+from app.api.deps import get_current_user, get_current_user_optional
 from app.core.config import settings
 from app.core.encryption import decrypt_credential_payload, encrypt_credential_payload
-from app.core.security import create_oauth_state, verify_oauth_state
+from app.core.security import create_access_token, create_oauth_state, verify_oauth_state
 from app.db.models import GitHubConnection, User, utc_now
 from app.db.session import get_db
 from app.services.github import GitHubService
@@ -49,18 +50,26 @@ def _get_active_github_access_token(user: User, db: Session | None) -> str:
 
 @router.get("/auth", status_code=200)
 def initiate_github_auth(
-    current_user: User = Depends(get_current_user),
+    current_user: User | None = Depends(get_current_user_optional),
 ) -> dict[str, str]:
     """Generate cryptographically signed OAuth state and return GitHub authorization URL."""
-    state_token = create_oauth_state(str(current_user.id))
+    user_id = str(current_user.id) if current_user else "login"
+    state_token = create_oauth_state(user_id)
+
+    # Determine redirect URI for OAuth callback (defaults to /login/callback frontend page)
+    redirect_uri = settings.GITHUB_REDIRECT_URI
+    if not redirect_uri:
+        base_origin = "http://localhost:3000"
+        if settings.ALLOWED_ORIGINS:
+            base_origin = settings.ALLOWED_ORIGINS[0]
+        redirect_uri = f"{base_origin.rstrip('/')}/login/callback"
 
     params = {
         "client_id": settings.GITHUB_CLIENT_ID,
-        "scope": "read:user repo",
+        "scope": "read:user user:email repo",
         "state": state_token,
+        "redirect_uri": redirect_uri,
     }
-    if settings.GITHUB_REDIRECT_URI:
-        params["redirect_uri"] = settings.GITHUB_REDIRECT_URI
 
     auth_url = f"https://github.com/login/oauth/authorize?{urllib.parse.urlencode(params)}"
     return {
@@ -73,11 +82,23 @@ def initiate_github_auth(
 def github_oauth_callback(
     code: str = Query(..., description="Authorization code from GitHub"),
     state: str = Query(..., description="Cryptographic OAuth state parameter"),
+    current_user: User | None = Depends(get_current_user_optional),
     db: Session | None = Depends(get_db),
-) -> dict[str, str]:
-    """Validate OAuth state, exchange code for access token, encrypt token, and upsert github_connections."""
-    user_id = verify_oauth_state(state)
-    if not user_id:
+) -> dict[str, Any]:
+    """Validate OAuth state, exchange code for token, resolve identity, encrypt token, and issue application JWT."""
+    if current_user:
+        user_id_or_login = verify_oauth_state(
+            state,
+            expected_user_id=str(current_user.id),
+            expected_state_type="oauth_state",
+        )
+    else:
+        user_id_or_login = verify_oauth_state(
+            state,
+            expected_state_type="oauth_login",
+        )
+
+    if not user_id_or_login:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid, expired, or reused OAuth state parameter.",
@@ -99,6 +120,10 @@ def github_oauth_callback(
             detail="Could not retrieve GitHub user identity.",
         )
 
+    gh_email = gh_user.get("email")
+    gh_login = gh_user.get("login") or f"user_{gh_user_id}"
+    email = str(gh_email) if gh_email else f"{gh_login}@github.local"
+
     payload = {
         "access_token": access_token,
         "github_user_id": gh_user_id,
@@ -107,30 +132,74 @@ def github_oauth_callback(
     }
     encrypted_token = encrypt_credential_payload(payload)
 
-    # Persist or update connection in database
+    target_user: User | None = None
+
     if db is not None:
-        user = db.query(User).filter(User.id == user_id).first()
-        if user:
-            user.github_user_id = gh_user_id
-            existing_conn = (
-                db.query(GitHubConnection).filter(GitHubConnection.user_id == user.id).first()
+        if user_id_or_login != "login":
+            try:
+                target_uuid = uuid.UUID(user_id_or_login)
+                target_user = db.query(User).filter(User.id == target_uuid).first()
+            except ValueError:
+                target_user = None
+
+        if not target_user:
+            # 1. Query by github_user_id first
+            target_user = db.query(User).filter(User.github_user_id == gh_user_id).first()
+
+        if not target_user:
+            # 2. Query by email second with collision detection
+            existing_email_user = db.query(User).filter(User.email == email).first()
+            if existing_email_user:
+                if existing_email_user.github_user_id and existing_email_user.github_user_id != gh_user_id:
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail="Account collision detected: An account with this email is linked to a different GitHub identity.",
+                    )
+                target_user = existing_email_user
+
+        if not target_user:
+            # 3. Create new application User entity
+            target_user = User(
+                id=uuid.uuid4(),
+                email=email,
+                github_user_id=gh_user_id,
             )
-            if existing_conn:
-                existing_conn.github_user_id = gh_user_id
-                existing_conn.access_token_encrypted = encrypted_token
-                existing_conn.updated_at = utc_now()
-            else:
-                new_conn = GitHubConnection(
-                    user_id=user.id,
-                    github_user_id=gh_user_id,
-                    access_token_encrypted=encrypted_token,
-                )
-                db.add(new_conn)
+            db.add(target_user)
             db.commit()
+            db.refresh(target_user)
+        else:
+            if not target_user.github_user_id:
+                target_user.github_user_id = gh_user_id
+                db.commit()
+
+        existing_conn = (
+            db.query(GitHubConnection).filter(GitHubConnection.user_id == target_user.id).first()
+        )
+        if existing_conn:
+            existing_conn.github_user_id = gh_user_id
+            existing_conn.access_token_encrypted = encrypted_token
+            existing_conn.updated_at = utc_now()
+        else:
+            new_conn = GitHubConnection(
+                user_id=target_user.id,
+                github_user_id=gh_user_id,
+                access_token_encrypted=encrypted_token,
+            )
+            db.add(new_conn)
+        db.commit()
+
+        effective_user_id = str(target_user.id)
+    else:
+        effective_user_id = user_id_or_login if user_id_or_login != "login" else str(uuid.uuid4())
+
+    app_jwt = create_access_token(subject=effective_user_id)
 
     return {
         "status": "connected",
         "github_user_id": gh_user_id,
+        "access_token": app_jwt,
+        "token_type": "bearer",
+        "user_id": effective_user_id,
     }
 
 

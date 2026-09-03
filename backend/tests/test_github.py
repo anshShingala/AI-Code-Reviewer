@@ -124,12 +124,20 @@ def test_oauth_authorization_start() -> None:
     assert "state" in data
 
 
+def test_unauthenticated_oauth_authorization_start() -> None:
+    response = client.get("/api/v1/github/auth")
+    assert response.status_code == 200
+    data = response.json()
+    assert "authorization_url" in data
+    assert "github.com/login/oauth/authorize" in data["authorization_url"]
+    assert "state" in data
+
+
 # 9 & 10. OAuth Callback Token Exchange & Identity Retrieval
 @patch("app.services.github.GitHubService.get_authenticated_github_user")
 @patch("app.services.github.GitHubService.exchange_code_for_token")
 def test_oauth_callback_token_exchange(mock_exchange, mock_get_user) -> None:
-    user_id = str(uuid.uuid4())
-    state = create_oauth_state(user_id, secret_key=TEST_AUTH_SECRET)
+    state = create_oauth_state("login", secret_key=TEST_AUTH_SECRET)
 
     mock_exchange.return_value = {"access_token": "gho_mock_access_token_123", "token_type": "bearer"}
     mock_get_user.return_value = {"id": 123456, "login": "octocat"}
@@ -137,7 +145,87 @@ def test_oauth_callback_token_exchange(mock_exchange, mock_get_user) -> None:
     response = client.get(f"/api/v1/github/callback?code=mock_code&state={state}")
     assert response.status_code == 200
     data = response.json()
-    assert data == {"status": "connected", "github_user_id": "123456"}
+    assert data["status"] == "connected"
+    assert data["github_user_id"] == "123456"
+    assert "access_token" in data
+    assert data["token_type"] == "bearer"
+
+
+def test_login_callback_rejects_oauth_state_token() -> None:
+    """Unauthenticated login flow MUST reject oauth_state tokens intended for account-linking."""
+    user_id = str(uuid.uuid4())
+    state = create_oauth_state(user_id, secret_key=TEST_AUTH_SECRET)  # type: oauth_state
+    response = client.get(f"/api/v1/github/callback?code=mock_code&state={state}")
+    assert response.status_code == 400
+    assert "Invalid, expired, or reused OAuth state parameter." in response.json()["detail"]
+
+
+@patch("app.services.github.GitHubService.get_authenticated_github_user")
+@patch("app.services.github.GitHubService.exchange_code_for_token")
+def test_account_linking_callback_accepts_oauth_state(mock_exchange, mock_get_user) -> None:
+    """Authenticated account-linking flow accepts valid oauth_state tokens."""
+    user_id = str(uuid.uuid4())
+    headers = get_auth_header(user_id)
+    state = create_oauth_state(user_id, secret_key=TEST_AUTH_SECRET)  # type: oauth_state
+
+    mock_exchange.return_value = {"access_token": "gho_mock_access_token_123", "token_type": "bearer"}
+    mock_get_user.return_value = {"id": 654321, "login": "octocat_linked"}
+
+    response = client.get(f"/api/v1/github/callback?code=mock_code&state={state}", headers=headers)
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "connected"
+    assert data["github_user_id"] == "654321"
+
+
+def test_account_linking_callback_rejects_oauth_login_token() -> None:
+    """Authenticated account-linking flow MUST reject oauth_login tokens."""
+    user_id = str(uuid.uuid4())
+    headers = get_auth_header(user_id)
+    state = create_oauth_state("login", secret_key=TEST_AUTH_SECRET)  # type: oauth_login
+
+    response = client.get(f"/api/v1/github/callback?code=mock_code&state={state}", headers=headers)
+    assert response.status_code == 400
+    assert "Invalid, expired, or reused OAuth state parameter." in response.json()["detail"]
+
+
+@patch("app.services.github.GitHubService.get_authenticated_github_user")
+@patch("app.services.github.GitHubService.exchange_code_for_token")
+def test_oauth_callback_account_collision_protection(mock_exchange, mock_get_user) -> None:
+    from app.db.session import get_db
+    from app.db.models import User
+    from unittest.mock import MagicMock
+
+    mock_user1 = User(id=uuid.uuid4(), email="clash@example.com", github_user_id="999999")
+    mock_db = MagicMock()
+    mock_query = MagicMock()
+    mock_db.query.return_value = mock_query
+
+    def filter_side_effect(criterion):
+        m = MagicMock()
+        crit_str = str(criterion)
+        if "clash@example.com" in crit_str or "email" in crit_str:
+            m.first.return_value = mock_user1
+        else:
+            m.first.return_value = None
+        return m
+
+    mock_query.filter.side_effect = filter_side_effect
+
+    def override_get_db():
+        yield mock_db
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        state = create_oauth_state("login", secret_key=TEST_AUTH_SECRET)
+        mock_exchange.return_value = {"access_token": "gho_mock_token", "token_type": "bearer"}
+        mock_get_user.return_value = {"id": 888888, "login": "attacker", "email": "clash@example.com"}
+
+        response = client.get(f"/api/v1/github/callback?code=mock_code&state={state}")
+        assert response.status_code == 409
+        assert "Account collision detected" in response.json()["detail"]
+    finally:
+        app.dependency_overrides.pop(get_db, None)
 
 
 # 11 & 12. Connection Persistence & One-Active-Connection
@@ -298,7 +386,6 @@ def test_network_timeout_error_handling(mock_repos) -> None:
 # 26. Unauthenticated GitHub Endpoint Access Rejected
 def test_unauthenticated_github_endpoint_access_rejected() -> None:
     endpoints = [
-        "/api/v1/github/auth",
         "/api/v1/github/status",
         "/api/v1/github/repositories",
     ]

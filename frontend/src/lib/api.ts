@@ -141,6 +141,15 @@ export const api = {
     };
   },
 
+  githubCallback: (code: string, state: string) =>
+    request<{
+      status: string;
+      github_user_id: string;
+      access_token?: string;
+      token_type?: string;
+      user_id?: string;
+    }>(`/github/callback?code=${encodeURIComponent(code)}&state=${encodeURIComponent(state)}`),
+
   deleteGitHubConnection: () => request<{ status: string }>('/github/connection', { method: 'DELETE' }),
 
   getRepositories: () => request<{ repositories: Repository[] }>('/github/repositories'),

@@ -99,6 +99,12 @@ ai-code-reviewer/
 - **Comprehensive E2E Test Suite**: End-to-end verification tests in `test_e2e_integration.py` validate the full lifecycle across AM-001 idempotency, AM-002 leasing/fencing, AM-003 reclamation, AM-004 background task dispatching, AM-005 polling, and AM-006 health metrics.
 - **Zero Schema Cost**: Operates 100% within the pre-built 5-table PostgreSQL physical schema with zero Alembic migrations or external metrics infrastructure.
 
+## Primary Authentication — GitHub OAuth Login (Prompt 18)
+- **1-Click GitHub Login**: Replaces developer-only manual JWT pasting with production-ready 1-click GitHub OAuth primary authentication on `/login`.
+- **Automatic User Provisioning & JWT Issuance**: Unauthenticated users clicking "Continue with GitHub" authenticate via GitHub TLS OAuth; backend retrieves verified GitHub identity (`gh_user_id`, `email`, `login`), finds or creates the application `User` in the `users` table, upserts `github_connections`, and automatically issues a signed application Bearer JWT (`create_access_token`).
+- **Frontend Session Handling**: `frontend/src/app/login/callback/page.tsx` processes the OAuth callback, automatically saves the application JWT to browser `localStorage` (`auth_token`), and redirects to the dashboard (`/`).
+- **Zero Schema Migrations**: Fully operates within the frozen 5-table PostgreSQL physical schema with zero database DDL alterations or external identity infrastructure.
+
 ## AI Review Engine (Prompt 07)
 - **AI Provider**: Google Gemini AI (`google-generativeai==0.4.1`) configured via `GEMINI_API_KEY` and `GEMINI_MODEL`. Zero hardcoded secrets.
 - **The One-Gemini-Call Invariant**: Exactly 1 structured JSON model call per Review. No LLM self-correction passes, second-pass calls, or fallback LLM providers.

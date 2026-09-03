@@ -56,6 +56,7 @@ def create_oauth_state(
     user_id: str,
     secret_key: str | None = None,
     expires_delta: timedelta | None = None,
+    state_type: str | None = None,
 ) -> str:
     """Create a signed, user-bound, 10-minute expiring OAuth state token."""
     key = secret_key if secret_key is not None else settings.AUTH_SECRET
@@ -66,12 +67,13 @@ def create_oauth_state(
     expire = now + (expires_delta if expires_delta is not None else timedelta(minutes=10))
 
     import secrets
+    resolved_type = state_type or ("oauth_login" if user_id == "login" else "oauth_state")
     to_encode: dict[str, Any] = {
         "user_id": str(user_id),
         "nonce": secrets.token_hex(16),
         "iat": now,
         "exp": expire,
-        "type": "oauth_state",
+        "type": resolved_type,
     }
     return jwt.encode(to_encode, key, algorithm=settings.JWT_ALGORITHM)
 
@@ -80,6 +82,7 @@ def verify_oauth_state(
     state_token: str,
     expected_user_id: str | None = None,
     secret_key: str | None = None,
+    expected_state_type: str | None = None,
 ) -> str | None:
     """Verify OAuth state signature, single-use policy, expiration, and user binding. Returns user_id if valid."""
     if not state_token or state_token in _USED_OAUTH_STATES:
@@ -95,7 +98,11 @@ def verify_oauth_state(
             key,
             algorithms=[settings.JWT_ALGORITHM],
         )
-        if payload.get("type") != "oauth_state":
+        token_type = payload.get("type")
+        if token_type not in ("oauth_state", "oauth_login"):
+            return None
+
+        if expected_state_type and token_type != expected_state_type:
             return None
 
         user_id = payload.get("user_id")

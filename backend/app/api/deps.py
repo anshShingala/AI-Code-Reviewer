@@ -40,3 +40,26 @@ def get_current_user(
     # Fallback mock User object if DB session is unready/testing
     user = User(id=user_id, email=f"user_{user_id[:8]}@example.com")
     return user
+
+
+def get_current_user_optional(
+    credentials: HTTPAuthorizationCredentials | None = Depends(security),
+    db: Session | None = Depends(get_db),
+) -> User | None:
+    """Optional FastAPI dependency resolving authenticated User if Bearer token present, else None."""
+    if not credentials or not credentials.credentials:
+        return None
+    try:
+        payload = verify_access_token(credentials.credentials)
+        if not payload:
+            return None
+        user_id: str | None = payload.get("sub")
+        if not user_id:
+            return None
+        if db is not None:
+            user = db.query(User).filter(User.id == user_id).first()
+            if user:
+                return user
+        return User(id=user_id, email=f"user_{user_id[:8]}@example.com")
+    except Exception:
+        return None
