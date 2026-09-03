@@ -152,7 +152,7 @@ export const api = {
 
   deleteGitHubConnection: () => request<{ status: string }>('/github/connection', { method: 'DELETE' }),
 
-  getRepositories: () => request<{ repositories: Repository[] }>('/github/repositories'),
+  getRepositories: () => request<Repository[]>('/github/repositories'),
 
   getBranches: (owner: string, repo: string) =>
     request<{ branches: Branch[] }>(`/github/repositories/${owner}/${repo}/branches`),

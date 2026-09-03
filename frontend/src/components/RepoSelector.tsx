@@ -40,7 +40,7 @@ export default function RepoSelector({ isConnected, onSelect }: RepoSelectorProp
     setError(null);
     try {
       const data = await api.getRepositories();
-      setRepos(data.repositories || []);
+      setRepos(data);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Failed to load repositories');
     } finally {
