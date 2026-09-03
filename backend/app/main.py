@@ -1,4 +1,7 @@
-from typing import Any
+import asyncio
+import logging
+from contextlib import asynccontextmanager
+from typing import Any, AsyncGenerator
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
@@ -8,12 +11,70 @@ from app.api.reviews import router as reviews_router
 from app.api.deps import get_current_user
 from app.core.config import settings
 from app.db.models import User
-from app.db.session import get_db
+from app.db.session import get_db, get_sessionmaker
+from app.services.ownership import reclaim_stale_reviews
+
+logger = logging.getLogger(__name__)
+
+
+def _run_stale_reclamation_once() -> None:
+    """Execute a single stale review reclamation cycle with isolated session lifecycle management."""
+    session_factory = get_sessionmaker()
+    if not session_factory:
+        return
+    db = session_factory()
+    try:
+        reclaim_stale_reviews(db)
+    except Exception as exc:
+        logger.warning(f"Stale review reclamation iteration warning: {exc}")
+    finally:
+        db.close()
+
+
+async def _stale_reclamation_ticker_loop(interval_seconds: int) -> None:
+    """In-process periodic background ticker loop executing stale review reclamation at configured interval."""
+    while True:
+        try:
+            await asyncio.sleep(interval_seconds)
+            _run_stale_reclamation_once()
+        except asyncio.CancelledError:
+            break
+        except Exception as exc:
+            logger.warning(f"Stale reclamation ticker loop warning: {exc}")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    """FastAPI application lifespan ContextManager handling startup recovery and periodic ticker loop."""
+    # 1. AM-003 Startup Recovery: Execute immediate stale review reclamation on boot
+    try:
+        _run_stale_reclamation_once()
+    except Exception as exc:
+        logger.warning(f"Startup stale review reclamation warning: {exc}")
+
+    # 2. AM-003 Periodic Ticker: Spawn background asyncio task if interval > 0
+    ticker_task = None
+    interval = settings.STALE_RECLAMATION_INTERVAL_SECONDS
+    if interval > 0:
+        ticker_task = asyncio.create_task(_stale_reclamation_ticker_loop(interval))
+
+    try:
+        yield
+    finally:
+        # 3. Graceful Shutdown: Cancel ticker task cleanly on application shutdown
+        if ticker_task and not ticker_task.done():
+            ticker_task.cancel()
+            try:
+                await ticker_task
+            except asyncio.CancelledError:
+                pass
+
 
 app = FastAPI(
     title=settings.APP_NAME,
     docs_url="/docs",
     redoc_url="/redoc",
+    lifespan=lifespan,
 )
 
 app.add_middleware(

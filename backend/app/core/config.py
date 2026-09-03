@@ -17,6 +17,7 @@ class Settings:
     GITHUB_REDIRECT_URI: str = os.getenv("GITHUB_REDIRECT_URI", "")
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
     GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-1.5-pro")
+    STALE_RECLAMATION_INTERVAL_SECONDS: int = int(os.getenv("STALE_RECLAMATION_INTERVAL_SECONDS", "60"))
 
     @property
     def ALLOWED_ORIGINS(self) -> list[str]:

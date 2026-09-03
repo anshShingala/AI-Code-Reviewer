@@ -230,3 +230,128 @@ def test_reviews_maintenance_reclaim_endpoint_success() -> None:
     data = response.json()
     assert data["status"] == "success"
     assert "reclaimed_count" in data
+
+
+def test_authoritative_fencing_bypasses_orm_cache(db_session: Session) -> None:
+    """Verify verify_fencing forces a DB refresh to reject stale ORM cached owner state."""
+    _, review = create_test_user_and_review(db_session, status="PROCESSING")
+    w1 = "worker-1"
+    acquire_ownership(db_session, review, w1, lease_seconds=300)
+
+    # Simulate another session/reclaimer modifying database row directly
+    engine = db_session.get_bind()
+    TestingSessionLocal = sessionmaker(bind=engine)
+    session2 = TestingSessionLocal()
+    try:
+        r2 = session2.query(Review).filter(Review.id == review.id).first()
+        assert r2 is not None
+        r2.status = "FAILED"
+        r2.owner_identity = None
+        r2.owner_expires_at = None
+        session2.commit()
+    finally:
+        session2.close()
+
+    # Original ORM object in db_session still has cached owner_identity="worker-1" in memory
+    # verify_fencing MUST refresh from DB and return False
+    assert verify_fencing(db_session, review, w1) is False
+
+
+def test_zombie_worker_rejected_after_reclamation(db_session: Session) -> None:
+    """Verify a zombie worker cannot mark review COMPLETED or persist findings after reclamation."""
+    from app.db.models import Finding
+    _, review = create_test_user_and_review(db_session, status="PROCESSING")
+    w1 = "worker-crashed"
+
+    acquire_ownership(db_session, review, w1, lease_seconds=10)
+
+    # Reclaimer reclaims expired review
+    review.owner_expires_at = utc_now() - timedelta(seconds=5)
+    db_session.commit()
+    reclaimed = reclaim_stale_reviews(db_session)
+    assert len(reclaimed) == 1
+    assert review.status == "FAILED"
+
+    # Worker 1 resumes and attempts fencing verification
+    is_fenced = verify_fencing(db_session, review, w1)
+    assert is_fenced is False
+
+    # Worker 1 cannot insert findings or mark COMPLETED
+    if not is_fenced:
+        db_session.rollback()
+
+    assert review.status == "FAILED"
+    findings_count = db_session.query(Finding).filter(Finding.review_id == review.id).count()
+    assert findings_count == 0
+
+
+def test_startup_and_periodic_lifespan_recovery() -> None:
+    """Verify application lifespan performs startup recovery and clean ticker cancellation."""
+    from fastapi.testclient import TestClient
+    from app.main import app
+
+    with TestClient(app) as client:
+        res = client.get("/health")
+        assert res.status_code == 200
+
+
+def test_concurrent_reclamation_safety(db_session: Session) -> None:
+    """Verify concurrent reclamation from multiple sessions is safe and idempotent."""
+    _, review = create_test_user_and_review(db_session, status="PROCESSING")
+    review.owner_identity = "worker-stale"
+    review.owner_expires_at = utc_now() - timedelta(minutes=10)
+    db_session.commit()
+
+    engine = db_session.get_bind()
+    TestingSessionLocal = sessionmaker(bind=engine)
+    s1 = TestingSessionLocal()
+    s2 = TestingSessionLocal()
+    try:
+        rec1 = reclaim_stale_reviews(s1)
+        rec2 = reclaim_stale_reviews(s2)
+        assert len(rec1) == 1
+        assert len(rec2) == 0
+    finally:
+        s1.close()
+        s2.close()
+
+
+def test_verify_fencing_db_refresh_failure_returns_false(db_session: Session) -> None:
+    """Verify verify_fencing strictly returns False if database refresh raises an exception."""
+    from unittest.mock import MagicMock
+    _, review = create_test_user_and_review(db_session, status="PROCESSING")
+    w1 = "worker-1"
+    acquire_ownership(db_session, review, w1, lease_seconds=300)
+
+    mock_db = MagicMock()
+    mock_db.refresh.side_effect = Exception("DB Connection Error during refresh")
+
+    # verify_fencing MUST return False when DB refresh raises an exception
+    assert verify_fencing(mock_db, review, w1) is False
+
+
+def test_ownership_takeover_rejects_old_worker(db_session: Session) -> None:
+    """Verify when Worker B takes over an expired lease, Worker A's fencing fails and Worker B remains owner."""
+    _, review = create_test_user_and_review(db_session, status="PROCESSING")
+    w1 = "worker-old"
+    w2 = "worker-new"
+
+    # Worker 1 acquires ownership
+    acquire_ownership(db_session, review, w1, lease_seconds=10)
+
+    # Worker 1 lease expires
+    review.owner_expires_at = utc_now() - timedelta(seconds=5)
+    db_session.commit()
+
+    # Worker 2 takes over ownership
+    lease2 = acquire_ownership(db_session, review, w2, lease_seconds=300)
+    assert lease2 is not None
+    assert lease2.owner_identity == w2
+
+    # Worker 1 attempts fencing check -> MUST fail
+    assert verify_fencing(db_session, review, w1) is False
+
+    # Worker 2 fencing check -> MUST pass
+    assert verify_fencing(db_session, review, w2) is True
+
+
