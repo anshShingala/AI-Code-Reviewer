@@ -48,6 +48,57 @@ export default function RepoSelector({ isConnected, onSelect }: RepoSelectorProp
     }
   };
 
+  const refreshRepositories = async () => {
+    if (loadingRepos) return;
+    setLoadingRepos(true);
+    setError(null);
+    try {
+      const data = await api.getRepositories();
+      setRepos(data);
+      if (selectedRepo && !data.some((r) => r.full_name === selectedRepo)) {
+        setSelectedRepo('');
+        setBranches([]);
+        setSelectedBranch('');
+        setTreeItems([]);
+        setSelectedFiles([]);
+        onSelect('', '', []);
+      }
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to refresh repositories');
+    } finally {
+      setLoadingRepos(false);
+    }
+  };
+
+  const refreshBranches = async () => {
+    if (!selectedRepo || loadingBranches) return;
+    const [owner, repo] = selectedRepo.split('/');
+    setLoadingBranches(true);
+    setError(null);
+    try {
+      const data = await api.getBranches(owner, repo);
+      setBranches(data);
+      if (data && data.length > 0) {
+        const existingBranch = data.find((b) => b.name === selectedBranch);
+        if (existingBranch) {
+          handleBranchChange(selectedRepo, selectedBranch);
+        } else {
+          const defaultBranch = data.find((b) => b.name === 'main' || b.name === 'master') || data[0];
+          handleBranchChange(selectedRepo, defaultBranch.name);
+        }
+      } else {
+        setSelectedBranch('');
+        setTreeItems([]);
+        setSelectedFiles([]);
+        onSelect(selectedRepo, '', []);
+      }
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to refresh branches');
+    } finally {
+      setLoadingBranches(false);
+    }
+  };
+
   const handleRepoChange = async (repoFullName: string) => {
     setSelectedRepo(repoFullName);
     setSelectedBranch('');
@@ -140,7 +191,19 @@ export default function RepoSelector({ isConnected, onSelect }: RepoSelectorProp
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         {/* Repository Dropdown */}
         <div>
-          <label className="block text-xs font-semibold text-slate-600 uppercase mb-2">Repository</label>
+          <div className="flex items-center justify-between mb-2">
+            <label className="block text-xs font-semibold text-slate-600 uppercase">Repository</label>
+            <button
+              type="button"
+              onClick={refreshRepositories}
+              disabled={loadingRepos}
+              title="Refresh repository list"
+              className="text-slate-400 hover:text-sky-600 disabled:opacity-40 transition flex items-center space-x-1 text-xs"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${loadingRepos ? 'animate-spin text-sky-600' : ''}`} />
+              <span className="sr-only">Refresh repositories</span>
+            </button>
+          </div>
           <div className="relative">
             <select
               value={selectedRepo}
@@ -155,18 +218,27 @@ export default function RepoSelector({ isConnected, onSelect }: RepoSelectorProp
                 </option>
               ))}
             </select>
-            {loadingRepos && (
-              <RefreshCw className="w-4 h-4 animate-spin absolute right-3 top-3 text-slate-400" />
-            )}
           </div>
         </div>
 
         {/* Branch Dropdown */}
         <div>
-          <label className="block text-xs font-semibold text-slate-600 uppercase mb-2 flex items-center space-x-1">
-            <GitBranch className="w-3.5 h-3.5 text-slate-500" />
-            <span>Branch / Ref</span>
-          </label>
+          <div className="flex items-center justify-between mb-2">
+            <label className="block text-xs font-semibold text-slate-600 uppercase flex items-center space-x-1">
+              <GitBranch className="w-3.5 h-3.5 text-slate-500" />
+              <span>Branch / Ref</span>
+            </label>
+            <button
+              type="button"
+              onClick={refreshBranches}
+              disabled={!selectedRepo || loadingBranches}
+              title="Refresh branch list"
+              className="text-slate-400 hover:text-sky-600 disabled:opacity-40 transition flex items-center space-x-1 text-xs"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${loadingBranches ? 'animate-spin text-sky-600' : ''}`} />
+              <span className="sr-only">Refresh branches</span>
+            </button>
+          </div>
           <div className="relative">
             <select
               value={selectedBranch}
@@ -181,9 +253,6 @@ export default function RepoSelector({ isConnected, onSelect }: RepoSelectorProp
                 </option>
               ))}
             </select>
-            {loadingBranches && (
-              <RefreshCw className="w-4 h-4 animate-spin absolute right-3 top-3 text-slate-400" />
-            )}
           </div>
         </div>
       </div>
