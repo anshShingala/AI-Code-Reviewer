@@ -85,6 +85,18 @@ def _run_review_engine_background(
         review_engine_service.execute_review_engine(
             review_id, db=db, repository_id=repository_id, ref=ref
         )
+    except Exception as exc:
+        try:
+            db.rollback()
+            review_uuid = uuid.UUID(str(review_id)) if isinstance(review_id, str) else review_id
+            review = db.query(Review).filter(Review.id == review_uuid).first()
+            if review and getattr(review, "status", None) == "PROCESSING":
+                review.status = "FAILED"
+                review.error_message = f"Background worker task exception: {str(exc)}"
+                review.updated_at = utc_now()
+                db.commit()
+        except Exception:
+            db.rollback()
     finally:
         db.close()
 

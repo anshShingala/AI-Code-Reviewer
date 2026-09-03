@@ -355,3 +355,68 @@ def test_ownership_takeover_rejects_old_worker(db_session: Session) -> None:
     assert verify_fencing(db_session, review, w2) is True
 
 
+def test_null_lease_stale_review_reclaimed(db_session: Session) -> None:
+    """Test B: A PROCESSING review with NULL lease fields created >300s ago is reclaimed to FAILED."""
+    from app.services.ownership import AM003_ORPHAN_ERROR
+
+    _, review = create_test_user_and_review(db_session, status="PROCESSING")
+    review.owner_identity = None
+    review.owner_expires_at = None
+    review.created_at = utc_now() - timedelta(seconds=600)
+    db_session.commit()
+
+    reclaimed = reclaim_stale_reviews(db_session)
+    assert len(reclaimed) == 1
+    assert reclaimed[0].id == review.id
+    assert reclaimed[0].status == "FAILED"
+    assert AM003_ORPHAN_ERROR in reclaimed[0].error_message
+
+
+def test_null_lease_fresh_review_not_reclaimed(db_session: Session) -> None:
+    """Test C: A recently created PROCESSING review with NULL lease fields is NOT reclaimed."""
+    _, review = create_test_user_and_review(db_session, status="PROCESSING")
+    review.owner_identity = None
+    review.owner_expires_at = None
+    review.created_at = utc_now() - timedelta(seconds=10)
+    db_session.commit()
+
+    reclaimed = reclaim_stale_reviews(db_session)
+    assert len(reclaimed) == 0
+    assert review.status == "PROCESSING"
+
+
+def test_background_worker_exception_handling(db_session: Session) -> None:
+    """Test D: An unhandled exception in background worker transitions review to FAILED."""
+    from unittest.mock import patch
+    from app.api.reviews import _run_review_engine_background
+
+    _, review = create_test_user_and_review(db_session, status="PROCESSING")
+    review_id_str = str(review.id)
+
+    with patch("app.api.reviews.get_sessionmaker") as mock_sm:
+        mock_sm.return_value = lambda: db_session
+        with patch("app.api.reviews.review_engine_service.execute_review_engine") as mock_exec:
+            mock_exec.side_effect = RuntimeError("Simulated unhandled worker crash")
+            _run_review_engine_background(review_id_str, repository_id="owner/repo", ref="main")
+
+    saved_review = db_session.query(Review).filter(Review.id == uuid.UUID(review_id_str)).first()
+    assert saved_review is not None
+    assert saved_review.status == "FAILED"
+    assert "Background worker task exception" in saved_review.error_message
+
+
+def test_ownership_contention_preserves_processing_status(db_session: Session) -> None:
+    """Test E: Contention when Worker B tries to acquire an active lease does not mark review FAILED."""
+    _, review = create_test_user_and_review(db_session, status="PROCESSING")
+    w1 = "worker-owner"
+    w2 = "worker-contender"
+
+    first = acquire_ownership(db_session, review, w1, lease_seconds=300)
+    assert first is not None
+
+    second = acquire_ownership(db_session, review, w2, lease_seconds=300)
+    assert second is None
+    assert review.status == "PROCESSING"
+    assert review.owner_identity == w1
+
+

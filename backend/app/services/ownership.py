@@ -8,6 +8,7 @@ from app.db.models import Review, utc_now
 
 DEFAULT_LEASE_SECONDS = 300  # 5 minute execution lease
 AM002_TIMEOUT_ERROR = "Review processing timed out or worker crash detected (AM-002 execution lease expired)"
+AM003_ORPHAN_ERROR = "Review background task execution was lost or failed to acquire an execution lease (AM-003 reclamation)"
 
 
 def generate_worker_identity() -> str:
@@ -138,17 +139,30 @@ def reclaim_stale_reviews(
     max_age_seconds: int = 0,
 ) -> List[Review]:
     """
-    Scan for stale reviews in PROCESSING status whose execution lease has expired (owner_expires_at < now)
-    and transition them to FAILED status with the explicit AM-002 timeout error message.
+    Scan for stale reviews in PROCESSING status:
+    1. Category A: Execution lease expired (owner_expires_at < now)
+    2. Category B: Un-leased orphan reviews (owner_expires_at IS NULL) created older than threshold
+    Transition them to FAILED status with explicit error messages.
     """
+    from sqlalchemy import and_, or_
+
     now = utc_now()
     threshold = now - timedelta(seconds=max_age_seconds)
+    created_threshold = now - timedelta(seconds=max_age_seconds if max_age_seconds > 0 else DEFAULT_LEASE_SECONDS)
+
+    cond_expired_lease = and_(
+        Review.owner_expires_at.isnot(None),
+        Review.owner_expires_at < threshold,
+    )
+    cond_unleased_orphan = and_(
+        Review.owner_expires_at.is_(None),
+        Review.created_at < created_threshold,
+    )
 
     try:
         query = db.query(Review).filter(
             Review.status == "PROCESSING",
-            Review.owner_expires_at.isnot(None),
-            Review.owner_expires_at < threshold,
+            or_(cond_expired_lease, cond_unleased_orphan),
         ).with_for_update(skiplocked=True)
         stale_reviews = query.all()
     except Exception:
@@ -156,8 +170,7 @@ def reclaim_stale_reviews(
             db.query(Review)
             .filter(
                 Review.status == "PROCESSING",
-                Review.owner_expires_at.isnot(None),
-                Review.owner_expires_at < threshold,
+                or_(cond_expired_lease, cond_unleased_orphan),
             )
             .all()
         )
@@ -165,7 +178,10 @@ def reclaim_stale_reviews(
     reclaimed: List[Review] = []
     for review in stale_reviews:
         review.status = "FAILED"
-        review.error_message = AM002_TIMEOUT_ERROR
+        if review.owner_expires_at is None:
+            review.error_message = AM003_ORPHAN_ERROR
+        else:
+            review.error_message = AM002_TIMEOUT_ERROR
         review.owner_identity = None
         review.owner_expires_at = None
         review.updated_at = now
