@@ -1,6 +1,6 @@
 'use client';
 
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { getAuthToken, removeAuthToken } from '@/lib/api';
@@ -8,10 +8,15 @@ import { Shield, LogOut, Key } from 'lucide-react';
 
 export default function Navbar() {
   const router = useRouter();
-  const token = getAuthToken();
+  const [token, setToken] = useState<string | null>(null);
+
+  useEffect(() => {
+    setToken(getAuthToken());
+  }, []);
 
   const handleLogout = () => {
     removeAuthToken();
+    setToken(null);
     router.push('/login');
   };
 
