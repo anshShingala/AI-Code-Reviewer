@@ -32,6 +32,8 @@ class ReviewEngineService:
         db: Session | None = None,
         categories_override: List[str] | None = None,
         worker_identity: str | None = None,
+        repository_id: str | None = None,
+        ref: str | None = None,
     ) -> Review | Dict[str, Any] | None:
         """Execute the deterministic AI Review Engine pipeline for a Review with AM-002 worker fencing."""
         if db is None:
@@ -56,6 +58,36 @@ class ReviewEngineService:
         leased_review = acquire_ownership(db, review, worker_id)
         if not leased_review:
             return review
+
+        # Context Validation: Strict enforcement of repository_id and ref (NO fallback to owner/repo or main)
+        if not repository_id or not isinstance(repository_id, str) or "/" not in repository_id or repository_id.count("/") != 1:
+            try:
+                db.rollback()
+                review = db.query(Review).filter(Review.id == review_uuid).first()
+                if review:
+                    review.status = "FAILED"
+                    review.error_message = f"Missing or invalid repository_id context '{repository_id}' for review processing."
+                    review.updated_at = utc_now()
+                    db.commit()
+            except Exception:
+                db.rollback()
+            return review
+
+        if not ref or not isinstance(ref, str) or not ref.strip():
+            try:
+                db.rollback()
+                review = db.query(Review).filter(Review.id == review_uuid).first()
+                if review:
+                    review.status = "FAILED"
+                    review.error_message = "Missing or invalid ref/commit SHA context for review processing."
+                    review.updated_at = utc_now()
+                    db.commit()
+            except Exception:
+                db.rollback()
+            return review
+
+        owner, repo = repository_id.strip().split("/")
+        target_sha = ref.strip()
 
         # Preflight Check 2: Fetch ReviewFiles
         review_files = db.query(ReviewFile).filter(ReviewFile.review_id == review.id).all()
@@ -92,20 +124,16 @@ class ReviewEngineService:
         # Preflight Check 4: Fetch Source Files Content In-Memory via GitHub API
         files_source: List[Dict[str, Any]] = []
         file_line_bounds: Dict[str, int] = {}
-        target_repo_id = ""
 
         try:
             for rf in review_files:
-                # Path parsing: if repo prefix not present, resolve ref
                 path = rf.file_path
-                # Call GitHub to retrieve file content
-                # For preflight testing, we resolve using GitHub service
                 file_data = self.github_service.get_file_content(
                     access_token=access_token,
-                    owner="owner",  # Resolved in integration context
-                    repo="repo",
+                    owner=owner,
+                    repo=repo,
                     path=path,
-                    sha="main",
+                    sha=target_sha,
                 )
 
                 content_b64 = file_data.get("content", "")
@@ -118,10 +146,16 @@ class ReviewEngineService:
                 files_source.append({"path": path, "content": raw_content})
                 file_line_bounds[path] = len(raw_content.splitlines()) or 1
         except Exception as exc:
-            review.status = "FAILED"
-            review.error_message = f"Preflight source retrieval failed: {str(exc)}"
-            review.updated_at = utc_now()
-            db.commit()
+            try:
+                db.rollback()
+                review = db.query(Review).filter(Review.id == review_uuid).first()
+                if review:
+                    review.status = "FAILED"
+                    review.error_message = f"Preflight source retrieval failed: {str(exc)}"
+                    review.updated_at = utc_now()
+                    db.commit()
+            except Exception:
+                db.rollback()
             return review
 
         if not files_source:
@@ -137,13 +171,19 @@ class ReviewEngineService:
             gemini_response = self.gemini_service.analyze_code(
                 files_source=files_source,
                 categories=categories,
-                commit_sha="",
+                commit_sha=target_sha,
             )
         except Exception as exc:
-            review.status = "FAILED"
-            review.error_message = f"Gemini review inference error: {str(exc)}"
-            review.updated_at = utc_now()
-            db.commit()
+            try:
+                db.rollback()
+                review = db.query(Review).filter(Review.id == review_uuid).first()
+                if review:
+                    review.status = "FAILED"
+                    review.error_message = f"Gemini review inference error: {str(exc)}"
+                    review.updated_at = utc_now()
+                    db.commit()
+            except Exception:
+                db.rollback()
             return review
 
         raw_findings = gemini_response.get("findings", [])
@@ -230,9 +270,14 @@ class ReviewEngineService:
             db.refresh(review)
             return review
         except Exception as exc:
-            db.rollback()
-            review.status = "FAILED"
-            review.error_message = f"Findings persistence failure: {str(exc)}"
-            review.updated_at = utc_now()
-            db.commit()
+            try:
+                db.rollback()
+                review = db.query(Review).filter(Review.id == review_uuid).first()
+                if review:
+                    review.status = "FAILED"
+                    review.error_message = f"Findings persistence failure: {str(exc)}"
+                    review.updated_at = utc_now()
+                    db.commit()
+            except Exception:
+                db.rollback()
             return review

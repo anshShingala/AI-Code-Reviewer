@@ -100,7 +100,7 @@ def test_review_engine_preflight_missing_github_connection() -> None:
     mock_db.query.return_value.filter.return_value.all.return_value = [MagicMock(file_path="a.py")]
 
     engine = ReviewEngineService()
-    result = engine.execute_review_engine(mock_review.id, db=mock_db)
+    result = engine.execute_review_engine(mock_review.id, db=mock_db, repository_id="owner/repo", ref="main")
 
     assert result.status == "FAILED"
     assert "active GitHub connection" in result.error_message
@@ -146,7 +146,7 @@ def test_review_engine_post_validation_filters_hallucinated_files() -> None:
         mock_decrypt.return_value = {"access_token": "token"}
         with patch.object(engine.github_service, "get_file_content") as mock_get_content:
             mock_get_content.return_value = {"content": "print('hello')", "encoding": "utf-8"}
-            result = engine.execute_review_engine(mock_review.id, db=mock_db)
+            result = engine.execute_review_engine(mock_review.id, db=mock_db, repository_id="owner/repo", ref="main")
 
     assert result.status == "COMPLETED"
     # Only 1 valid finding persisted (hallucinated file discarded)
@@ -185,7 +185,7 @@ def test_review_engine_post_validation_filters_out_of_bounds_lines() -> None:
         mock_decrypt.return_value = {"access_token": "token"}
         with patch.object(engine.github_service, "get_file_content") as mock_get_content:
             mock_get_content.return_value = {"content": "line1\nline2\n", "encoding": "utf-8"}
-            result = engine.execute_review_engine(mock_review.id, db=mock_db)
+            result = engine.execute_review_engine(mock_review.id, db=mock_db, repository_id="owner/repo", ref="main")
 
     assert result.status == "COMPLETED"
     assert mock_db.add.call_count == 0  # Out of bounds finding discarded
@@ -222,7 +222,88 @@ def test_review_engine_deduplication() -> None:
         mock_decrypt.return_value = {"access_token": "token"}
         with patch.object(engine.github_service, "get_file_content") as mock_get_content:
             mock_get_content.return_value = {"content": "code\n", "encoding": "utf-8"}
-            result = engine.execute_review_engine(mock_review.id, db=mock_db)
+            result = engine.execute_review_engine(mock_review.id, db=mock_db, repository_id="owner/repo", ref="main")
 
     assert result.status == "COMPLETED"
     assert mock_db.add.call_count == 1  # 3 identical findings deduplicated to 1
+
+
+# 11. Missing repository_id context explicitly fails review
+def test_review_engine_missing_repository_id_fails() -> None:
+    engine = ReviewEngineService()
+    mock_db = MagicMock()
+    mock_review = MagicMock()
+    mock_review.id = uuid.uuid4()
+    mock_review.status = "PROCESSING"
+    mock_db.query.return_value.filter.return_value.first.return_value = mock_review
+
+    result = engine.execute_review_engine(mock_review.id, db=mock_db, repository_id=None, ref="main")
+    assert result.status == "FAILED"
+    assert "Missing or invalid repository_id" in result.error_message
+
+
+# 12. Malformed repository_id context explicitly fails review
+def test_review_engine_malformed_repository_id_fails() -> None:
+    engine = ReviewEngineService()
+    mock_db = MagicMock()
+    mock_review = MagicMock()
+    mock_review.id = uuid.uuid4()
+    mock_review.status = "PROCESSING"
+    mock_db.query.return_value.filter.return_value.first.return_value = mock_review
+
+    result = engine.execute_review_engine(mock_review.id, db=mock_db, repository_id="invalid_no_slash", ref="main")
+    assert result.status == "FAILED"
+    assert "Missing or invalid repository_id" in result.error_message
+
+
+# 13. Missing or empty ref context explicitly fails review
+def test_review_engine_missing_ref_fails() -> None:
+    engine = ReviewEngineService()
+    mock_db = MagicMock()
+    mock_review = MagicMock()
+    mock_review.id = uuid.uuid4()
+    mock_review.status = "PROCESSING"
+    mock_db.query.return_value.filter.return_value.first.return_value = mock_review
+
+    result = engine.execute_review_engine(mock_review.id, db=mock_db, repository_id="owner/repo", ref="")
+    assert result.status == "FAILED"
+    assert "Missing or invalid ref/commit SHA" in result.error_message
+
+
+# 14. Valid repository_id and ref used for GitHub retrieval
+def test_review_engine_valid_repository_and_ref_used() -> None:
+    engine = ReviewEngineService()
+    mock_gemini = MagicMock()
+    mock_gemini.analyze_code.return_value = {"findings": []}
+    engine.gemini_service = mock_gemini
+
+    mock_db = MagicMock()
+    mock_review = MagicMock()
+    mock_review.id = uuid.uuid4()
+    mock_review.status = "PROCESSING"
+    mock_db.query.return_value.filter.return_value.first.side_effect = [
+        mock_review,
+        MagicMock(access_token_encrypted="enc"),
+    ]
+    mock_db.query.return_value.filter.return_value.all.return_value = [MagicMock(file_path="src/main.py")]
+
+    with patch("app.services.review_engine.decrypt_credential_payload") as mock_decrypt:
+        mock_decrypt.return_value = {"access_token": "token"}
+        with patch.object(engine.github_service, "get_file_content") as mock_get_content:
+            mock_get_content.return_value = {"content": "print('hello')", "encoding": "utf-8"}
+            result = engine.execute_review_engine(
+                mock_review.id,
+                db=mock_db,
+                repository_id="acme/custom-repo",
+                ref="feature/custom-branch",
+            )
+
+            mock_get_content.assert_called_once_with(
+                access_token="token",
+                owner="acme",
+                repo="custom-repo",
+                path="src/main.py",
+                sha="feature/custom-branch",
+            )
+            assert result.status == "COMPLETED"
+

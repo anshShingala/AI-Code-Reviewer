@@ -68,15 +68,23 @@ def get_system_health(
         }
 
 
-def _run_review_engine_background(review_id: str) -> None:
+def _run_review_engine_background(
+    review_id: str,
+    repository_id: str | None = None,
+    ref: str | None = None,
+) -> None:
     """Independent background execution helper for async review processing."""
     session_factory = get_sessionmaker()
     if not session_factory:
-        review_engine_service.execute_review_engine(review_id, db=None)
+        review_engine_service.execute_review_engine(
+            review_id, db=None, repository_id=repository_id, ref=ref
+        )
         return
     db = session_factory()
     try:
-        review_engine_service.execute_review_engine(review_id, db=db)
+        review_engine_service.execute_review_engine(
+            review_id, db=db, repository_id=repository_id, ref=ref
+        )
     finally:
         db.close()
 
@@ -636,7 +644,12 @@ def create_review(
             "created_at": "2026-09-01T00:00:00Z",
         }
         _MOCK_REVIEWS_STORE[mock_key] = new_mock_review
-        background_tasks.add_task(_run_review_engine_background, new_mock_review["id"])
+        background_tasks.add_task(
+            _run_review_engine_background,
+            new_mock_review["id"],
+            request_data.repository_id,
+            resolved_sha or request_data.ref,
+        )
         return new_mock_review
 
     # Atomic DB Transaction & Idempotency Resolution
@@ -685,7 +698,12 @@ def create_review(
     try:
         db.commit()
         db.refresh(new_review)
-        background_tasks.add_task(_run_review_engine_background, str(new_review.id))
+        background_tasks.add_task(
+            _run_review_engine_background,
+            str(new_review.id),
+            request_data.repository_id,
+            resolved_sha or request_data.ref,
+        )
         return {
             "id": str(new_review.id),
             "status": new_review.status,
